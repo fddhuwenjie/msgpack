@@ -113,7 +113,10 @@ func decodeSliceValue(d *Decoder, v reflect.Value) error {
 		}
 
 		elem := v.Index(i)
-		if err := d.DecodeValue(elem); err != nil {
+		d.pushPath(fmt.Sprintf("[%d]", i))
+		err = d.DecodeValue(elem)
+		d.popPath()
+		if err != nil {
 			return err
 		}
 	}
@@ -145,7 +148,10 @@ func decodeArrayValue(d *Decoder, v reflect.Value) error {
 
 	for i := 0; i < n; i++ {
 		sv := v.Index(i)
-		if err := d.DecodeValue(sv); err != nil {
+		d.pushPath(fmt.Sprintf("[%d]", i))
+		err := d.DecodeValue(sv)
+		d.popPath()
+		if err != nil {
 			return err
 		}
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,6 +75,14 @@ type Decoder struct {
 	rec        []byte
 	dict       []string
 	flags      uint32
+
+	// unknownFieldHandler is called for each map key that does not match
+	// any field of the destination struct. See SetUnknownFieldHandler.
+	unknownFieldHandler func(*Decoder, string) error
+
+	// path holds the logical field segments from the root value to the
+	// value that is currently being decoded.
+	path []string
 }
 
 // NewDecoder returns a new decoder that reads from r.
@@ -111,6 +120,8 @@ func (d *Decoder) WithDict(dict []string, fn func(*Decoder) error) error {
 
 func (d *Decoder) ResetReader(r io.Reader) {
 	d.mapDecoder = nil
+	d.unknownFieldHandler = nil
+	d.path = d.path[:0]
 	d.dict = nil
 
 	if br, ok := r.(bufReader); ok {
@@ -149,12 +160,77 @@ func (d *Decoder) SetCustomStructTag(tag string) {
 // DisallowUnknownFields causes the Decoder to return an error when the destination
 // is a struct and the input contains object keys which do not match any
 // non-ignored, exported fields in the destination.
+//
+// The error contains the logical path from the root value to the unknown
+// field, e.g. `msgpack: unknown field "Inner.Leaf.bogus"`.
 func (d *Decoder) DisallowUnknownFields(on bool) {
 	if on {
 		d.flags |= disallowUnknownFieldsFlag
 	} else {
 		d.flags &= ^disallowUnknownFieldsFlag
 	}
+}
+
+// SetUnknownFieldHandler sets a function that is called when the decoder
+// encounters a map key that does not match any field of the destination
+// struct. The function receives the decoder and the unknown key; inside
+// the function Decoder.Path returns the logical path from the root value
+// to the enclosing struct (the unknown key itself is not part of the
+// path yet).
+//
+// If the function returns nil the unknown value is skipped and decoding
+// continues, i.e. all known fields are still decoded. If the function
+// returns an error, decoding is aborted and that error is returned.
+//
+// The handler is invoked whenever it is set, even when
+// DisallowUnknownFields is disabled, so callers can record unknown
+// fields without failing. When no handler is set and
+// DisallowUnknownFields is enabled, the decoder returns an error with
+// the "msgpack: unknown field" prefix. The handler is reset by Reset.
+func (d *Decoder) SetUnknownFieldHandler(fn func(*Decoder, string) error) {
+	d.unknownFieldHandler = fn
+}
+
+// Path returns the logical path from the root value to the value that
+// is currently being decoded. Struct fields are separated by a dot and
+// slice/array elements are rendered as "[i]". Fields of inlined
+// (embedded) structs are not separated from the enclosing struct and
+// fields of array-encoded structs use their logical field name.
+func (d *Decoder) Path() string {
+	return joinFieldPath(d.path)
+}
+
+func (d *Decoder) pushPath(segment string) {
+	d.path = append(d.path, segment)
+}
+
+func (d *Decoder) popPath() {
+	if n := len(d.path); n > 0 {
+		d.path = d.path[:n-1]
+	}
+}
+
+// unknownFieldPath renders the current path plus the unknown key.
+func (d *Decoder) unknownFieldPath(name string) string {
+	return joinFieldPath(append(d.path, name))
+}
+
+func joinFieldPath(segments []string) string {
+	var b strings.Builder
+	for _, seg := range segments {
+		if seg == "" {
+			continue
+		}
+		if seg[0] == '[' {
+			b.WriteString(seg)
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('.')
+		}
+		b.WriteString(seg)
+	}
+	return b.String()
 }
 
 // UseInternedStrings enables support for decoding interned strings.

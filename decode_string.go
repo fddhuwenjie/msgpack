@@ -3,6 +3,7 @@ package msgpack
 import (
 	"fmt"
 	"reflect"
+	"strings"
 
 	"github.com/vmihailenco/msgpack/v5/msgpcode"
 )
@@ -119,6 +120,53 @@ func (d *Decoder) decodeStringTemp() (string, error) {
 	}
 
 	return bytesToString(b), nil
+}
+
+// decodeFieldName decodes a map key that names a struct field. Unlike
+// decodeStringTemp it rejects a nil key: nil can never name a struct
+// field, and treating it as the empty name would produce a bogus unknown
+// field diagnostic for malformed input.
+func (d *Decoder) decodeFieldName() (string, error) {
+	if intern := d.flags&useInternedStringsFlag != 0; intern || len(d.dict) > 0 {
+		c, err := d.PeekCode()
+		if err != nil {
+			return "", err
+		}
+		if c == msgpcode.Nil {
+			if _, err := d.readCode(); err != nil {
+				return "", err
+			}
+			return "", fmt.Errorf("msgpack: invalid code=%x decoding struct field name", c)
+		}
+		s, err := d.decodeInternedString(intern)
+		return strings.Clone(s), err
+	}
+
+	c, err := d.readCode()
+	if err != nil {
+		return "", err
+	}
+	if c == msgpcode.Nil {
+		return "", fmt.Errorf("msgpack: invalid code=%x decoding struct field name", c)
+	}
+
+	n, err := d.bytesLen(c)
+	if err != nil {
+		return "", err
+	}
+	if n <= 0 {
+		return "", nil
+	}
+
+	b, err := d.readN(n)
+	if err != nil {
+		return "", err
+	}
+
+	// Copy the bytes: unlike decodeStringTemp the returned name is
+	// retained (on the logical field path and by unknown field
+	// handlers), while d.buf is reused for subsequent reads.
+	return strings.Clone(bytesToString(b)), nil
 }
 
 func (d *Decoder) decodeBytesPtr(ptr *[]byte) error {

@@ -315,8 +315,14 @@ func decodeStructValue(d *Decoder, v reflect.Value) error {
 		return errArrayStruct
 	}
 
+	// Array-encoded structs carry no keys, but their elements correspond
+	// to logical fields by position, so the field names participate in
+	// the unknown field path just like map-encoded fields.
 	for _, f := range fields.List {
-		if err := f.DecodeValue(d, v); err != nil {
+		d.pushPath(f.name)
+		err = f.DecodeValue(d, v)
+		d.popPath()
+		if err != nil {
 			return err
 		}
 	}
@@ -332,25 +338,42 @@ func (d *Decoder) decodeStruct(v reflect.Value, n int) error {
 
 	fields := structs.Fields(v.Type(), d.structTag)
 	for i := 0; i < n; i++ {
-		name, err := d.decodeStringTemp()
+		name, err := d.decodeFieldName()
 		if err != nil {
 			return err
 		}
 
 		if f := fields.Map[name]; f != nil {
-			if err := f.DecodeValue(d, v); err != nil {
+			d.pushPath(name)
+			err = f.DecodeValue(d, v)
+			d.popPath()
+			if err != nil {
 				return err
 			}
 			continue
 		}
 
-		if d.flags&disallowUnknownFieldsFlag != 0 {
-			return fmt.Errorf("msgpack: unknown field %q", name)
+		if err := d.handleUnknownField(name); err != nil {
+			return err
 		}
 		if err := d.Skip(); err != nil {
 			return err
 		}
 	}
 
+	return nil
+}
+
+// handleUnknownField reports an unknown map key to the configured handler
+// or, in strict mode, returns an error naming the full logical path from
+// the root value to the field. In non-strict mode without a handler the
+// unknown value is skipped by the caller.
+func (d *Decoder) handleUnknownField(name string) error {
+	if d.unknownFieldHandler != nil {
+		return d.unknownFieldHandler(d, name)
+	}
+	if d.flags&disallowUnknownFieldsFlag != 0 {
+		return fmt.Errorf("msgpack: unknown field %q", d.unknownFieldPath(name))
+	}
 	return nil
 }
